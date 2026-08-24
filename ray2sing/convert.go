@@ -24,6 +24,8 @@ var configTypes = map[string]ParserFunc{
 	"strojan://":   TrojanSingbox,
 	"ss://":        ShadowsocksSingbox,
 	"tuic://":      TuicSingbox,
+	// juicity: third QUIC transport, for DPI diversity (see juicity.go).
+	"juicity://":   JuicitySingbox,
 	"hysteria://":  HysteriaSingbox,
 	"hysteria2://": Hysteria2Singbox,
 	"hy2://":       Hysteria2Singbox,
