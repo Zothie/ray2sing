@@ -37,7 +37,11 @@ func Hysteria2Singbox(hysteria2Url string) (*T.Outbound, error) {
 	var hopPorts badoption.Listable[string]
 	var hopInterval badoption.Duration
 	if u.PortRange != "" {
-		hopPorts = badoption.Listable[string]{u.PortRange}
+		// sing-quic's ParsePorts requires a COLON separator ("20000:40000");
+		// a dash makes NewClient fail and the outbound never constructs — worse
+		// than the silent single-port fallback this replaced. Links in the wild
+		// use a dash, so translate it here.
+		hopPorts = badoption.Listable[string]{strings.Replace(u.PortRange, "-", ":", 1)}
 		// Default to 30s when the link does not say; matches common practice.
 		secs := 30
 		if v, ok := decoded["hopinterval"]; ok && v != "" {
