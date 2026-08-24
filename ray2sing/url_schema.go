@@ -32,7 +32,49 @@ func (u UrlSchema) GetServerOption() T.ServerOptions {
 // }
 
 // parseHysteria2 parses a given URL and returns a HysteriaURLData struct.
+
+// liftPortRange rewrites "host:20000-40000" to "host:20000" so url.Parse
+// accepts it, returning the original range separately. Ports are the only
+// place a dash can appear between the last colon and the following delimiter,
+// so this cannot corrupt a hostname or a password.
+func liftPortRange(raw string) (string, string) {
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd < 0 {
+		return raw, ""
+	}
+	rest := raw[schemeEnd+3:]
+	authEnd := len(rest)
+	for _, sep := range []string{"/", "?", "#"} {
+		if i := strings.Index(rest, sep); i >= 0 && i < authEnd {
+			authEnd = i
+		}
+	}
+	authority := rest[:authEnd]
+	host := authority
+	if at := strings.LastIndex(authority, "@"); at >= 0 {
+		host = authority[at+1:]
+	}
+	colon := strings.LastIndex(host, ":")
+	if colon < 0 {
+		return raw, ""
+	}
+	port := host[colon+1:]
+	dash := strings.Index(port, "-")
+	if dash <= 0 {
+		return raw, ""
+	}
+	first := port[:dash]
+	fixed := raw[:schemeEnd+3] + strings.Replace(authority, ":"+port, ":"+first, 1) + rest[authEnd:]
+	return fixed, port
+}
+
 func ParseUrl(inputURL string, defaultPort uint16) (*UrlSchema, error) {
+	// url.Parse rejects a port RANGE outright ("invalid port"), so the range
+	// must be lifted out BEFORE parsing — otherwise a Hysteria2 port-hopping
+	// link is dropped from the subscription entirely and the user silently
+	// loses the profile.
+	inputURL, liftedRange := liftPortRange(inputURL)
+
 	parsedURL, err := url.Parse(inputURL)
 	if err != nil {
 		return nil, err
@@ -42,7 +84,7 @@ func ParseUrl(inputURL string, defaultPort uint16) (*UrlSchema, error) {
 	// falling back to the default port — which drops the profile's whole reason
 	// for existing. Keep the range and use its first port as the dial target.
 	rawPort := parsedURL.Port()
-	portRange := ""
+	portRange := liftedRange
 	if i := strings.Index(rawPort, "-"); i > 0 {
 		portRange = rawPort
 		rawPort = rawPort[:i]
