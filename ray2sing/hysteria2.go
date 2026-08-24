@@ -1,7 +1,12 @@
 package ray2sing
 
 import (
+	"strconv"
+	"strings"
+	"time"
+
 	T "github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common/json/badoption"
 )
 
 func Hysteria2Singbox(hysteria2Url string) (*T.Outbound, error) {
@@ -29,6 +34,20 @@ func Hysteria2Singbox(hysteria2Url string) (*T.Outbound, error) {
 		}
 	}
 
+	var hopPorts badoption.Listable[string]
+	var hopInterval badoption.Duration
+	if u.PortRange != "" {
+		hopPorts = badoption.Listable[string]{u.PortRange}
+		// Default to 30s when the link does not say; matches common practice.
+		secs := 30
+		if v, ok := decoded["hopinterval"]; ok && v != "" {
+			if n, err := strconv.Atoi(strings.TrimSuffix(v, "s")); err == nil && n > 0 {
+				secs = n
+			}
+		}
+		hopInterval = badoption.Duration(time.Duration(secs) * time.Second)
+	}
+
 	SNI := decoded["sni"]
 	if SNI == "" {
 		SNI = decoded["hostname"]
@@ -46,8 +65,14 @@ func Hysteria2Singbox(hysteria2Url string) (*T.Outbound, error) {
 		Tag:  u.Name,
 		Options: &T.Hysteria2OutboundOptions{
 			ServerOptions: u.GetServerOption(),
-			Obfs:          ObfsOpts,
-			Password:      pass,
+			// Carry port hopping through. Without this the range in the link is
+			// discarded and the client pins one port — losing the entire point
+			// of hopping, which is that a per-port block cannot catch a client
+			// spread across thousands of them.
+			ServerPorts: hopPorts,
+			HopInterval: hopInterval,
+			Obfs:        ObfsOpts,
+			Password:    pass,
 			OutboundTLSOptionsContainer: T.OutboundTLSOptionsContainer{
 				TLS: &T.OutboundTLSOptions{
 					Enabled:    true,

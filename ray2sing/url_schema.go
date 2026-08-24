@@ -10,13 +10,14 @@ import (
 
 // HysteriaURLData holds the parsed data from a Hysteria URL.
 type UrlSchema struct {
-	Scheme   string
-	Username string
-	Password string
-	Hostname string
-	Port     uint16
-	Name     string
-	Params   map[string]string
+	Scheme    string
+	Username  string
+	Password  string
+	Hostname  string
+	Port      uint16
+	PortRange string
+	Name      string
+	Params    map[string]string
 }
 
 func (u UrlSchema) GetServerOption() T.ServerOptions {
@@ -36,16 +37,27 @@ func ParseUrl(inputURL string, defaultPort uint16) (*UrlSchema, error) {
 	if err != nil {
 		return nil, err
 	}
-	port := toUInt16(parsedURL.Port(), defaultPort)
+	// A port RANGE like 20000-40000 is how Hysteria2 expresses port hopping.
+	// url.Port() returns it verbatim and the numeric parse fails, silently
+	// falling back to the default port — which drops the profile's whole reason
+	// for existing. Keep the range and use its first port as the dial target.
+	rawPort := parsedURL.Port()
+	portRange := ""
+	if i := strings.Index(rawPort, "-"); i > 0 {
+		portRange = rawPort
+		rawPort = rawPort[:i]
+	}
+	port := toUInt16(rawPort, defaultPort)
 
 	data := &UrlSchema{
-		Scheme:   parsedURL.Scheme,
-		Username: parsedURL.User.Username(),
-		Password: getPassword(parsedURL),
-		Hostname: parsedURL.Hostname(),
-		Port:     port,
-		Name:     parsedURL.Fragment,
-		Params:   make(map[string]string),
+		Scheme:    parsedURL.Scheme,
+		Username:  parsedURL.User.Username(),
+		Password:  getPassword(parsedURL),
+		Hostname:  parsedURL.Hostname(),
+		Port:      port,
+		PortRange: portRange,
+		Name:      parsedURL.Fragment,
+		Params:    make(map[string]string),
 	}
 	if isBase64CharsOnly(data.Username) {
 		userInfo, err := decodeBase64IfNeeded(data.Username)
