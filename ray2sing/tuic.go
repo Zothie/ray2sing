@@ -42,9 +42,15 @@ func TuicSingbox(tuicUrl string) (*T.Outbound, error) {
 					Enabled:    true,
 					DisableSNI: decoded["sni"] == "",
 					ServerName: decoded["sni"],
-					Insecure:   decoded["allowinsecure"] == "1" || decoded["insecure"] == "1",
-					ALPN:       []string{"h3", "spdy/3.1"},
-					ECH:        ECHOpts,
+					// ParseUrl's normalizeStr turns "_" and "-" into SPACES, not into nothing —
+					// so "allow_insecure" arrives as "allow insecure". Looking up
+					// "allowinsecure" silently never matched, which left a self-signed
+					// server failing TLS and showing as a dead node in the UI.
+					Insecure: decoded["allow insecure"] == "1" ||
+						decoded["allowinsecure"] == "1" ||
+						decoded["insecure"] == "1",
+					ALPN: []string{"h3", "spdy/3.1"},
+					ECH:  ECHOpts,
 				},
 			},
 			// TurnRelay: turnRelay,
