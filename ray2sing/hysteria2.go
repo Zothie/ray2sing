@@ -77,6 +77,18 @@ func Hysteria2Singbox(hysteria2Url string) (*T.Outbound, error) {
 			HopInterval: hopInterval,
 			Obfs:        ObfsOpts,
 			Password:    pass,
+			// The relay's uplink goes silent for ~30 s at a time (measured:
+			// 28 s inbound-UDP blackouts every 20-60 min, hitting every client
+			// at once). sing-quic's default 30 s idle timeout is exactly the
+			// length of such a hole, so the session died on every one of them
+			// while the server, at 120 s, would have kept it. Match the server
+			// and probe often enough that a single lost keepalive is not fatal.
+			QUICOptions: T.QUICOptions{
+				HTTP2Options: T.HTTP2Options{
+					IdleTimeout:     badoption.Duration(120 * time.Second),
+					KeepAlivePeriod: badoption.Duration(8 * time.Second),
+				},
+			},
 			OutboundTLSOptionsContainer: T.OutboundTLSOptionsContainer{
 				TLS: &T.OutboundTLSOptions{
 					Enabled:    true,
