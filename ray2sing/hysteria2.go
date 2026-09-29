@@ -20,7 +20,11 @@ func Hysteria2Singbox(hysteria2Url string) (*T.Outbound, error) {
 	if obfs, ok := decoded["obfs"]; ok && obfs != "" {
 		ObfsOpts = &T.Hysteria2Obfs{
 			Type:     obfs,
-			Password: decoded["obfs-password"],
+			// ParseUrl normalises "-" and "_" in query keys to a space, so the
+			// standard "obfs-password" arrives as "obfs password". Reading only
+			// the dashed key left the salamander password empty and the core
+			// refused the outbound ("missing obfs password").
+			Password: firstNonEmpty(decoded["obfs password"], decoded["obfs-password"], decoded["obfspassword"]),
 		}
 	}
 

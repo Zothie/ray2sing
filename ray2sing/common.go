@@ -526,3 +526,14 @@ func getOneOfN(dic map[string]string, defaultval string, headers ...string) stri
 	}
 	return defaultval
 }
+
+// firstNonEmpty returns the first non-empty value; used where a query key can
+// arrive under several spellings after ParseUrl's normalisation.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
