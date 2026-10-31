@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	T "github.com/sagernet/sing-box/option"
+	E "github.com/sagernet/sing/common/exceptions"
 )
 
 // HysteriaURLData holds the parsed data from a Hysteria URL.
@@ -77,7 +78,18 @@ func ParseUrl(inputURL string, defaultPort uint16) (*UrlSchema, error) {
 
 	parsedURL, err := url.Parse(inputURL)
 	if err != nil {
-		return nil, err
+		// url.Parse rejects a non-IPv6 bracketed host like wg://[server]:222/
+		// (the brackets imply an IPv6 literal). Template links use them as
+		// placeholders, so strip the brackets from the authority and retry
+		// instead of dropping the whole link.
+		fixed, fixErr := stripHostBrackets(inputURL)
+		if fixErr != nil {
+			return nil, err
+		}
+		parsedURL, err = url.Parse(fixed)
+		if err != nil {
+			return nil, err
+		}
 	}
 	// A port RANGE like 20000-40000 is how Hysteria2 expresses port hopping.
 	// url.Port() returns it verbatim and the numeric parse fails, silently
@@ -108,9 +120,12 @@ func ParseUrl(inputURL string, defaultPort uint16) (*UrlSchema, error) {
 		if err == nil && isValidChar(userInfo) {
 			// If decoding is successful, use the decoded string
 			userDetails := strings.Split(userInfo, ":")
-			if len(userDetails) == 2 {
+			// Shadowsocks-2022 passwords contain a ':' themselves, so a decoded
+			// userinfo can be "method:part1:part2" — split on the FIRST colon
+			// and keep the rest (colons included) as the password.
+			if len(userDetails) >= 2 {
 				data.Username = userDetails[0]
-				data.Password = userDetails[1]
+				data.Password = strings.Join(userDetails[1:], ":")
 			}
 		}
 	}
@@ -120,6 +135,29 @@ func ParseUrl(inputURL string, defaultPort uint16) (*UrlSchema, error) {
 	}
 
 	return data, nil
+}
+
+// stripHostBrackets removes '[' and ']' from the authority part of a URL. It
+// is only used as a fallback when url.Parse already failed, so a REAL IPv6
+// host (which parses fine) is never touched.
+func stripHostBrackets(raw string) (string, error) {
+	schemeEnd := strings.Index(raw, "://")
+	if schemeEnd < 0 {
+		return "", E.New("no scheme separator")
+	}
+	rest := raw[schemeEnd+3:]
+	authEnd := len(rest)
+	for _, sep := range []string{"/", "?", "#"} {
+		if i := strings.Index(rest, sep); i >= 0 && i < authEnd {
+			authEnd = i
+		}
+	}
+	authority := rest[:authEnd]
+	if !strings.Contains(authority, "[") {
+		return "", E.New("no bracketed host")
+	}
+	fixed := strings.NewReplacer("[", "", "]", "").Replace(authority)
+	return raw[:schemeEnd+3] + fixed + rest[authEnd:], nil
 }
 
 func normalizeStr(ss string) string {

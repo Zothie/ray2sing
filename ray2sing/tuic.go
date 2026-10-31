@@ -33,8 +33,12 @@ func TuicSingbox(tuicUrl string) (*T.Outbound, error) {
 			ServerOptions:     u.GetServerOption(),
 			UUID:              u.Username,
 			Password:          u.Password,
-			CongestionControl: decoded["congestioncontrol"],
-			UDPRelayMode:      decoded["udprelaymode"],
+			// normalizeStr turns "_" into a SPACE, so congestion_control and
+			// udp_relay_mode arrive as "congestion control"/"udp relay mode";
+			// looking up the concatenated forms never matched and silently
+			// dropped both settings from every subscription link.
+			CongestionControl: decoded["congestion control"],
+			UDPRelayMode:      decoded["udp relay mode"],
 			ZeroRTTHandshake:  false,
 			Heartbeat:         badoption.Duration(10 * time.Second),
 			OutboundTLSOptionsContainer: T.OutboundTLSOptionsContainer{

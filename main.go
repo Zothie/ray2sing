@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	_ "embed"
 	"fmt"
 	"io"
@@ -10,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/hiddify/ray2sing/ray2sing"
-	"github.com/sagernet/sing-box/experimental/libbox"
 	_ "github.com/sagernet/sing-box/include"
 )
 
@@ -127,7 +127,9 @@ func main() {
 	} else {
 		configs = read()
 	}
-	clash_conf, err := ray2sing.Ray2Singbox(libbox.BaseContext(nil), configs, false)
+	// The marshal path needs no libbox services; keeping libbox out of this
+	// binary avoids its oomprofile go:linkname, which no longer links on go 1.25.
+	clash_conf, err := ray2sing.Ray2Singbox(context.Background(), configs, false)
 
 	if err != nil {
 		log.Fatalf("Failed to parse config: %v", err)

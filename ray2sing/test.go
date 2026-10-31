@@ -1,6 +1,7 @@
 package ray2sing
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -8,12 +9,23 @@ import (
 	"sort"
 	"testing"
 
-	"github.com/sagernet/sing-box/experimental/libbox"
+	"github.com/sagernet/sing-box/include"
 	T "github.com/sagernet/sing-box/option"
+	singjson "github.com/sagernet/sing/common/json"
+	"github.com/sagernet/sing/service"
 )
 
+// testContext carries the outbound type registry without libbox: option
+// unmarshalling refuses a context that has no registry ("missing outbound
+// options registry"), and importing libbox here would drag
+// libbox/internal/oomprofile's go:linkname into every test link, which no
+// longer builds on go 1.25.
+func testContext() context.Context {
+	return service.ContextWith[T.OutboundOptionsRegistry](context.Background(), include.OutboundRegistry())
+}
+
 func CheckUrlAndJson(url string, expectedJSON string, t *testing.T) {
-	configJson, err := Ray2Singbox(libbox.BaseContext(nil), url, false)
+	configJson, err := Ray2Singbox(testContext(), url, false)
 	if err != nil {
 		t.Fatalf("Error parsing URL: %v", err)
 	}
@@ -36,15 +48,22 @@ func CheckUrlAndJson(url string, expectedJSON string, t *testing.T) {
 
 func json2map_prettystr(injson string) ([]T.Outbound, string, error) {
 	var conf T.Options
-	if err := conf.UnmarshalJSONContext(context.Background(), []byte(injson)); err != nil {
+	if err := conf.UnmarshalJSONContext(testContext(), []byte(injson)); err != nil {
 		return conf.Outbounds, "", err
 	}
 	if len(conf.Outbounds) == 0 {
 		return conf.Outbounds, "", fmt.Errorf("No outbound")
 	}
-	pp, err := json.MarshalIndent(conf.Outbounds, "", " ")
+	// option.Outbound only implements MarshalJSONContext, so std encoding/json
+	// would silently collapse every outbound to {"type","tag"} — marshal with
+	// the context-aware encoder and indent the result for readability.
+	pp, err := singjson.MarshalContext(context.Background(), conf.Outbounds)
 	if err != nil {
 		return conf.Outbounds, "", err
+	}
+	var indented bytes.Buffer
+	if err := json.Indent(&indented, pp, "", " "); err == nil {
+		pp = indented.Bytes()
 	}
 	return conf.Outbounds, string(pp), nil
 }

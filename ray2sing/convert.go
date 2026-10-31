@@ -29,6 +29,9 @@ var configTypes = map[string]ParserFunc{
 	"hysteria://":  HysteriaSingbox,
 	"hysteria2://": Hysteria2Singbox,
 	"hy2://":       Hysteria2Singbox,
+	// hydra: fork-local ws relay authenticated by a static pubkey — a fourth
+	// transport for DPI diversity (see hydra.go).
+	"hydra://":     HydraSingbox,
 	"ssh://":       SSHSingbox,
 	"naive://":     NaiveSingbox,
 
@@ -205,6 +208,9 @@ func Ray2Singbox(ctx context.Context, configs string, useXrayWhenPossible bool) 
 	// if err != nil {
 	// 	return nil, err
 	// }
+	if err != nil {
+		return nil, err
+	}
 	return convertedData.MarshalJSONContext(ctx)
 }
 func Ray2SingboxOptions(ctx context.Context, configs string, useXrayWhenPossible bool) (out *option.Options, err error) {
