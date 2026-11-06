@@ -2,7 +2,9 @@ package ray2sing
 
 import (
 	"encoding/base64"
+	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 
 	T "github.com/sagernet/sing-box/option"
@@ -12,6 +14,17 @@ import (
 // defaultHydraPath is the ws path a hydra relay serves when the share link
 // carries none.
 const defaultHydraPath = "/hydra"
+
+const (
+	// hydraProofBytesMin/Max bound the adaptive proof size (pb=) carried by
+	// an adaptive-group member link: big enough to measure real throughput,
+	// small enough not to cost a mobile plan.
+	hydraProofBytesMin = 1024
+	hydraProofBytesMax = 1048576
+	// hydraMaxPhysDNS caps the physical resolver list (pd=) so one malformed
+	// link cannot balloon the physical dialer.
+	hydraMaxPhysDNS = 8
+)
 
 // HydraOutboundOptions mirrors option.HydraOutboundOptions in the
 // hiddify-sing-box fork (branch feat/hydra). It is declared here, field for
@@ -24,9 +37,17 @@ const defaultHydraPath = "/hydra"
 type HydraOutboundOptions struct {
 	T.DialerOptions
 	T.ServerOptions
-	Pubkey string                `json:"pubkey"`          // server static pubkey, std base64 with padding
-	Path   string                `json:"path,omitempty"`  // ws path, defaults to defaultHydraPath
+	Pubkey string                `json:"pubkey"`         // server static pubkey, std base64 with padding
+	Path   string                `json:"path,omitempty"` // ws path, defaults to defaultHydraPath
 	TLS    *T.OutboundTLSOptions `json:"tls,omitempty"`
+	// Adaptive-group plumbing, kept in sync with the fork type. See
+	// option.HydraOutboundOptions there for the full contract.
+	AdaptiveGroup      string   `json:"adaptive_group,omitempty"`
+	AdaptiveProof      string   `json:"adaptive_proof,omitempty"`
+	AdaptiveProofBytes int      `json:"adaptive_proof_bytes,omitempty"`
+	AdaptiveInterface  string   `json:"adaptive_interface,omitempty"`
+	AdaptiveDNS        []string `json:"adaptive_dns,omitempty"`
+	Transport          string   `json:"transport,omitempty"`
 }
 
 // HydraSingbox parses a `hydra://` share link into a sing-box hydra outbound.
@@ -43,6 +64,13 @@ type HydraOutboundOptions struct {
 // supported. A relay authenticates by its pubkey-bound handshake, so an
 // enabled TLS block always carries insecure=true (mirrors the Rust client,
 // which never verifies certificates).
+//
+// Adaptive-group params (all optional, see hydraAdaptiveParams):
+//
+//	ag=<group-id>&pa=<https-url>&pb=<bytes>&pi=<iface>&pd=<ip:port,...>&at=<wss|rtc>
+//
+// A link carrying ag= is a candidate member of an adaptive group; the core
+// builder merges all members of one group into a single adaptive outbound.
 func HydraSingbox(hydraURL string) (*T.Outbound, error) {
 	u, err := ParseUrl(hydraURL, 443)
 	if err != nil {
@@ -98,16 +126,98 @@ func HydraSingbox(hydraURL string) (*T.Outbound, error) {
 		}
 	}
 
+	group, proof, proofBytes, iface, physDNS, transport, err := hydraAdaptiveParams(u)
+	if err != nil {
+		return nil, err
+	}
+
 	return &T.Outbound{
 		Type: "hydra",
 		Tag:  u.Name,
-		Options: &HydraOutboundOptions{
-			ServerOptions: u.GetServerOption(),
-			Pubkey:        pub,
-			Path:          path,
-			TLS:           tls,
+		// Use the fork's option type (go.mod replaces sing-box with the
+		// hiddify-sing-box fork that defines HydraOutboundOptions). The
+		// local mirror type marshals identically, but sing-box's outbound
+		// registry type-asserts Options to *option.HydraOutboundOptions
+		// when the config is validated/built - a mirror value panics with
+		// "interface conversion" and kills the whole subscription parse.
+		Options: &T.HydraOutboundOptions{
+			ServerOptions:      u.GetServerOption(),
+			Pubkey:             pub,
+			Path:               path,
+			TLS:                tls,
+			AdaptiveGroup:      group,
+			AdaptiveProof:      proof,
+			AdaptiveProofBytes: proofBytes,
+			AdaptiveInterface:  iface,
+			AdaptiveDNS:        physDNS,
+			Transport:          transport,
 		},
 	}, nil
+}
+
+// hydraAdaptiveParams parses the OPTIONAL adaptive-group query params of a
+// hydra:// link. Every param is independent: absent means unset (zero value),
+// but present-and-invalid FAILS the whole link parse (fail-closed) so a
+// malformed member can never silently join a group. The settings are carried
+// identically on every member link; the core builder rejects a group whose
+// members disagree.
+//
+//	ag=<group-id>   marks the link as a member of an adaptive group
+//	pa=<https-url>  group proof URL; must be https with a host
+//	pb=<bytes>      group proof size; 1024..1048576 inclusive
+//	pi=<name>       physical probe interface name
+//	pd=<ip:port,…>  physical resolvers; comma-separated ip:port, max 8
+//	at=<wss|rtc>    wire transport override; absent defaults to wss
+func hydraAdaptiveParams(u *UrlSchema) (group, proof string, proofBytes int, iface string, physDNS []string, transport string, err error) {
+	if v, ok := u.Params["ag"]; ok {
+		group = strings.TrimSpace(v)
+		if group == "" {
+			return "", "", 0, "", nil, "", E.New("hydra: empty adaptive group id (ag)")
+		}
+	}
+	if v, ok := u.Params["pa"]; ok {
+		proof = strings.TrimSpace(v)
+		pu, perr := url.Parse(proof)
+		if perr != nil || pu.Scheme != "https" || pu.Host == "" {
+			return "", "", 0, "", nil, "", E.New("hydra: adaptive proof url (pa) is not an https url: ", proof)
+		}
+	}
+	if v, ok := u.Params["pb"]; ok {
+		n, aerr := strconv.Atoi(strings.TrimSpace(v))
+		if aerr != nil || n < hydraProofBytesMin || n > hydraProofBytesMax {
+			return "", "", 0, "", nil, "", E.New("hydra: adaptive proof bytes (pb) out of range ",
+				hydraProofBytesMin, "..", hydraProofBytesMax, ": ", v)
+		}
+		proofBytes = n
+	}
+	if v, ok := u.Params["pi"]; ok {
+		iface = strings.TrimSpace(v)
+		if iface == "" {
+			return "", "", 0, "", nil, "", E.New("hydra: empty adaptive interface (pi)")
+		}
+	}
+	if v, ok := u.Params["pd"]; ok {
+		for _, item := range strings.Split(v, ",") {
+			item = strings.TrimSpace(item)
+			if _, perr := netip.ParseAddrPort(item); perr != nil {
+				return "", "", 0, "", nil, "", E.New("hydra: adaptive dns (pd) entry is not ip:port: ", item)
+			}
+			physDNS = append(physDNS, item)
+		}
+		if len(physDNS) > hydraMaxPhysDNS {
+			return "", "", 0, "", nil, "", E.New("hydra: adaptive dns (pd) has more than ",
+				hydraMaxPhysDNS, " entries")
+		}
+	}
+	if v, ok := u.Params["at"]; ok {
+		transport = strings.ToLower(strings.TrimSpace(v))
+		switch transport {
+		case "wss", "rtc":
+		default:
+			return "", "", 0, "", nil, "", E.New("hydra: invalid transport (at): ", v)
+		}
+	}
+	return group, proof, proofBytes, iface, physDNS, transport, nil
 }
 
 // hydraPubkey extracts and normalizes the relay pubkey.
