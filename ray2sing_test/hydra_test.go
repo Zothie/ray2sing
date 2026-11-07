@@ -207,9 +207,9 @@ func TestHydra(t *testing.T) {
 
 func TestHydraErrors(t *testing.T) {
 	for _, url := range []string{
-		"hydra://relay.example.com:443#no-key",        // no pubkey anywhere
-		"hydra://relay.example.com:443?pub=#empty",    // empty pub value
-		"hydra://relay.example.com:443?pub=!!!bad!!!", // not base64
+		"hydra://relay.example.com:443#no-key",             // no pubkey anywhere
+		"hydra://relay.example.com:443?pub=#empty",         // empty pub value
+		"hydra://relay.example.com:443?pub=!!!bad!!!",      // not base64
 		"hydra://relay.example.com:443?pub=YWJj&tls=maybe", // invalid flag
 		"hydra://relay.example.com:20000-40000?pub=YWJj",   // port range
 		"hydra://relay.example.com:0?pub=YWJj",             // port zero
@@ -217,6 +217,99 @@ func TestHydraErrors(t *testing.T) {
 	} {
 		if out, err := ray2sing.HydraSingbox(url); err == nil {
 			t.Errorf("HydraSingbox(%q) = %+v, want error", url, out)
+		}
+	}
+}
+
+// TestHydraAxes proves every tuning-axis query param lands on the outbound
+// (TUNING.md sweep): the full vocabulary ffmin/ffmax/frmin/frmax/fsd/dis/
+// disd/pbk/mp/bpm/rcc/rcw/rtomin/rtomax/rbc/rka/tlsfrag/tlsmin/tlsmax/
+// tlsalpn, all in one link.
+func TestHydraAxes(t *testing.T) {
+	url := "hydra://relay.example.com?pub=YWJjZA==" +
+		"&ffmin=16&ffmax=48&frmin=24&frmax=64&fsd=5" +
+		"&dis=1&disd=25" +
+		"&pbk=512,2048,65536&mp=32&bpm=1024" +
+		"&rcc=900&rcw=64&rtomin=120&rtomax=4000&rbc=256&rka=3000" +
+		"&tlsfrag=1&tlsmin=1.2&tlsmax=1.3&tlsalpn=h2,http/1.1#tuned"
+	out, err := ray2sing.HydraSingbox(url)
+	if err != nil {
+		t.Fatalf("HydraSingbox(%q): %v", url, err)
+	}
+	got := marshalOutbound(t, out)
+	want := map[string]any{
+		"type": "hydra", "tag": "tuned",
+		"server": "relay.example.com", "server_port": 443.0,
+		"pubkey": "YWJjZA==", "path": "/hydra",
+		"tls":            map[string]any{"enabled": true, "insecure": true},
+		"frag_first_min": 16.0, "frag_first_max": 48.0,
+		"frag_rest_min": 24.0, "frag_rest_max": 64.0,
+		"split_delay_ms": 5.0,
+		"disorder":       true, "disorder_delay_ms": 25.0,
+		"pad_buckets": []any{512.0, 2048.0, 65536.0},
+		"max_pad":     32.0, "big_pad_max": 1024.0,
+		"rtc_chunk": 900.0, "rtc_window": 64.0,
+		"rto_min": 120.0, "rto_max": 4000.0,
+		"buffer_cap": 256.0, "keepalive_every": 3000.0,
+		"tls_fragment": true, "tls_min_version": "1.2", "tls_max_version": "1.3",
+		"tls_alpn": []any{"h2", "http/1.1"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		gotRaw, _ := json.Marshal(got)
+		t.Errorf("axes mismatch\n got: %s", gotRaw)
+	}
+	// A plain link marshals without any axis field (omitempty everywhere).
+	plain, err := ray2sing.HydraSingbox("hydra://YWJjZA==@relay.example.com#plain")
+	if err != nil {
+		t.Fatalf("plain link: %v", err)
+	}
+	plainMap := marshalOutbound(t, plain)
+	for _, axisKey := range []string{"frag_first_min", "disorder", "pad_buckets", "rtc_chunk", "tls_fragment"} {
+		if _, present := plainMap[axisKey]; present {
+			t.Errorf("plain link must not carry axis key %q", axisKey)
+		}
+	}
+}
+
+func TestHydraAxisErrors(t *testing.T) {
+	const base = "hydra://relay.example.com?pub=YWJjZA=="
+	for name, qs := range map[string]string{
+		"ffmin junk":       "&ffmin=abc",
+		"ffmax high":       "&ffmax=65",
+		"frmax high":       "&frmax=97",
+		"fsd high":         "&fsd=51",
+		"disd high":        "&disd=101",
+		"dis flag":         "&dis=maybe",
+		"pbk descending":   "&pbk=1024,512",
+		"pbk low member":   "&pbk=100",
+		"pbk high member":  "&pbk=65537",
+		"pbk nine entries": "&pbk=256,512,1024,2048,4096,8192,16384,32768,65536",
+		"mp high":          "&mp=65",
+		"bpm high":         "&bpm=4097",
+		"rcc low":          "&rcc=255",
+		"rcc high":         "&rcc=1181",
+		"rcw low":          "&rcw=15",
+		"rcw high":         "&rcw=1025",
+		"rtomin high":      "&rtomin=501",
+		"rtomax low":       "&rtomax=999",
+		"rbc low":          "&rbc=127",
+		"rka high":         "&rka=15001",
+		"tlsfrag flag":     "&tlsfrag=yes-please",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if out, err := ray2sing.HydraSingbox(base + qs); err == nil {
+				t.Errorf("HydraSingbox(%q) = %+v, want error", qs, out)
+			}
+		})
+	}
+	// Zero values are legal and mean "fork default" for every numeric axis;
+	// they stay omitted on the marshalled outbound.
+	if out, err := ray2sing.HydraSingbox(base + "&fsd=0&disd=0&mp=0&bpm=0"); err != nil {
+		t.Errorf("zero-valued numeric axes must parse: %v", err)
+	} else {
+		got := marshalOutbound(t, out)
+		if _, present := got["split_delay_ms"]; present {
+			t.Errorf("zero axis must stay omitted, got %+v", got)
 		}
 	}
 }
