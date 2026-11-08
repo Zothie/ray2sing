@@ -47,6 +47,7 @@ type HydraOutboundOptions struct {
 	AdaptiveProofBytes int      `json:"adaptive_proof_bytes,omitempty"`
 	AdaptiveInterface  string   `json:"adaptive_interface,omitempty"`
 	AdaptiveDNS        []string `json:"adaptive_dns,omitempty"`
+	AdaptiveASN        string   `json:"adaptive_asn,omitempty"`
 	Transport          string   `json:"transport,omitempty"`
 	// Tuning-axis passthrough, kept in sync with the fork type (same JSON
 	// names). Zero value = fork defaults = legacy behavior.
@@ -154,7 +155,7 @@ func HydraSingbox(hydraURL string) (*T.Outbound, error) {
 		}
 	}
 
-	group, proof, proofBytes, iface, physDNS, transport, err := hydraAdaptiveParams(u)
+	group, proof, proofBytes, iface, physDNS, asn, transport, err := hydraAdaptiveParams(u)
 	if err != nil {
 		return nil, err
 	}
@@ -182,6 +183,7 @@ func HydraSingbox(hydraURL string) (*T.Outbound, error) {
 			AdaptiveProofBytes: proofBytes,
 			AdaptiveInterface:  iface,
 			AdaptiveDNS:        physDNS,
+			AdaptiveASN:        asn,
 			Transport:          transport,
 			// Tuning axes (TUNING.md sweep); zero fields keep the fork's
 			// legacy behavior byte-identical.
@@ -221,25 +223,26 @@ func HydraSingbox(hydraURL string) (*T.Outbound, error) {
 //	pb=<bytes>      group proof size; 1024..1048576 inclusive
 //	pi=<name>       physical probe interface name
 //	pd=<ip:port,…>  physical resolvers; comma-separated ip:port, max 8
+//	asn=<decimal>   provider ASN ordering hint for catalogue recipe expansion
 //	at=<wss|rtc>    wire transport override; absent defaults to wss
-func hydraAdaptiveParams(u *UrlSchema) (group, proof string, proofBytes int, iface string, physDNS []string, transport string, err error) {
+func hydraAdaptiveParams(u *UrlSchema) (group, proof string, proofBytes int, iface string, physDNS []string, asn string, transport string, err error) {
 	if v, ok := u.Params["ag"]; ok {
 		group = strings.TrimSpace(v)
 		if group == "" {
-			return "", "", 0, "", nil, "", E.New("hydra: empty adaptive group id (ag)")
+			return "", "", 0, "", nil, "", "", E.New("hydra: empty adaptive group id (ag)")
 		}
 	}
 	if v, ok := u.Params["pa"]; ok {
 		proof = strings.TrimSpace(v)
 		pu, perr := url.Parse(proof)
 		if perr != nil || pu.Scheme != "https" || pu.Host == "" {
-			return "", "", 0, "", nil, "", E.New("hydra: adaptive proof url (pa) is not an https url: ", proof)
+			return "", "", 0, "", nil, "", "", E.New("hydra: adaptive proof url (pa) is not an https url: ", proof)
 		}
 	}
 	if v, ok := u.Params["pb"]; ok {
 		n, aerr := strconv.Atoi(strings.TrimSpace(v))
 		if aerr != nil || n < hydraProofBytesMin || n > hydraProofBytesMax {
-			return "", "", 0, "", nil, "", E.New("hydra: adaptive proof bytes (pb) out of range ",
+			return "", "", 0, "", nil, "", "", E.New("hydra: adaptive proof bytes (pb) out of range ",
 				hydraProofBytesMin, "..", hydraProofBytesMax, ": ", v)
 		}
 		proofBytes = n
@@ -247,31 +250,38 @@ func hydraAdaptiveParams(u *UrlSchema) (group, proof string, proofBytes int, ifa
 	if v, ok := u.Params["pi"]; ok {
 		iface = strings.TrimSpace(v)
 		if iface == "" {
-			return "", "", 0, "", nil, "", E.New("hydra: empty adaptive interface (pi)")
+			return "", "", 0, "", nil, "", "", E.New("hydra: empty adaptive interface (pi)")
 		}
 	}
 	if v, ok := u.Params["pd"]; ok {
 		for _, item := range strings.Split(v, ",") {
 			item = strings.TrimSpace(item)
 			if _, perr := netip.ParseAddrPort(item); perr != nil {
-				return "", "", 0, "", nil, "", E.New("hydra: adaptive dns (pd) entry is not ip:port: ", item)
+				return "", "", 0, "", nil, "", "", E.New("hydra: adaptive dns (pd) entry is not ip:port: ", item)
 			}
 			physDNS = append(physDNS, item)
 		}
 		if len(physDNS) > hydraMaxPhysDNS {
-			return "", "", 0, "", nil, "", E.New("hydra: adaptive dns (pd) has more than ",
+			return "", "", 0, "", nil, "", "", E.New("hydra: adaptive dns (pd) has more than ",
 				hydraMaxPhysDNS, " entries")
 		}
+	}
+	// asn=<decimal AS number> orders catalogue recipe hints for the group.
+	// Deliberately permissive (an ordering hint, not security): any value is
+	// accepted verbatim; an unknown value simply never matches catalogue
+	// hints and expansion falls back to document order.
+	if v, ok := u.Params["asn"]; ok {
+		asn = strings.TrimSpace(v)
 	}
 	if v, ok := u.Params["at"]; ok {
 		transport = strings.ToLower(strings.TrimSpace(v))
 		switch transport {
 		case "wss", "rtc":
 		default:
-			return "", "", 0, "", nil, "", E.New("hydra: invalid transport (at): ", v)
+			return "", "", 0, "", nil, "", "", E.New("hydra: invalid transport (at): ", v)
 		}
 	}
-	return group, proof, proofBytes, iface, physDNS, transport, nil
+	return group, proof, proofBytes, iface, physDNS, asn, transport, nil
 }
 
 // hydraAxisParams parses the OPTIONAL tuning-axis query params (TUNING.md

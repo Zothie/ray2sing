@@ -3,6 +3,7 @@ package ray2sing
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -138,17 +139,47 @@ func TestHydraSingboxNoAdaptiveParams(t *testing.T) {
 	}
 	h := ob.Options.(*T.HydraOutboundOptions)
 	if h.AdaptiveGroup != "" || h.AdaptiveProof != "" || h.AdaptiveProofBytes != 0 ||
-		h.AdaptiveInterface != "" || h.AdaptiveDNS != nil || h.Transport != "" {
+		h.AdaptiveInterface != "" || h.AdaptiveDNS != nil || h.AdaptiveASN != "" || h.Transport != "" {
 		t.Fatalf("adaptive fields not zero: %+v", h)
 	}
 	b, err := json.Marshal(h)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"adaptive_group", "adaptive_proof", "adaptive_dns", "adaptive_interface", "transport"} {
+	for _, key := range []string{"adaptive_group", "adaptive_proof", "adaptive_dns", "adaptive_interface", "adaptive_asn", "transport"} {
 		if bytes.Contains(b, []byte(key)) {
 			t.Fatalf("plain link JSON gained key %q: %s", key, b)
 		}
+	}
+}
+
+// asn= rides onto AdaptiveASN as the catalogue recipe ordering hint. It is
+// deliberately permissive (an ordering hint, not security): a non-numeric
+// value parses verbatim and simply never matches catalogue hints.
+func TestHydraSingboxAdaptiveASN(t *testing.T) {
+	base := "hydra://stLqUvj6Rr+Ps5gbewpszBZq8g7mlZi3KgZdBy507mA@103.71.20.24:443/hydra?tls=1&ag=ru-1&pa=https://p.example/proof&asn=%s#hydra-a"
+	ob, err := HydraSingbox(fmt.Sprintf(base, "12345"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := ob.Options.(*T.HydraOutboundOptions); h.AdaptiveASN != "12345" {
+		t.Fatalf("adaptive asn: %q", h.AdaptiveASN)
+	}
+	// Permissive: an unusual value must not fail the link parse.
+	ob, err = HydraSingbox(fmt.Sprintf(base, "telecom"))
+	if err != nil {
+		t.Fatalf("permissive asn failed the parse: %v", err)
+	}
+	if h := ob.Options.(*T.HydraOutboundOptions); h.AdaptiveASN != "telecom" {
+		t.Fatalf("adaptive asn verbatim: %q", h.AdaptiveASN)
+	}
+	// Absent stays empty.
+	ob, err = HydraSingbox("hydra://stLqUvj6Rr+Ps5gbewpszBZq8g7mlZi3KgZdBy507mA@103.71.20.24:443/hydra?tls=1&ag=ru-1&pa=https://p.example/proof#hydra-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := ob.Options.(*T.HydraOutboundOptions); h.AdaptiveASN != "" {
+		t.Fatalf("absent asn: %q", h.AdaptiveASN)
 	}
 }
 
